@@ -1,0 +1,896 @@
+---
+title: "Fuga de Clientes 1"
+author: "Cinzia Zullian"
+date: '2022-06-02'
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+---
+
+
+```{r }
+setwd("C:/Users/cinzi/OneDrive/Escritorio/Big_Data_Complutense/Mineria de Datos/Tarea")
+source("Funciones_R.R")
+datos<- readRDS("C:/Users/cinzi/OneDrive/Escritorio/Big_Data_Complutense/Mineria de Datos/Tarea")
+datos <- datos[,c(2:21)]
+paquetes(c('questionr','psych','car','corrplot','ggplot2',"gridExtra",'kableExtra','dplyr','DMwR2','simputation','tidyverse','visdat','missForest','caret','glmnet','epiDisplay','pROC','kableExtra'))
+
+
+```
+
+
+
+
+```{r FugaClientes_training}
+str(datos)
+
+```
+ se observa que todas las categorías son factores y todos ellos menores a 10, por lo tanto se puede decir que son buenos clasificadores. Adicionalmente las variables numéricas están asignadas correctamente.
+
+```{r}
+sapply(Filter(is.numeric, datos),function(x) length(unique(x))) 
+
+```
+las variables FacturaTotal y FacturaMes tienen gran cantidad de valores únicos, por lo cuál se espera que no sean buenos clasificadores
+
+
+
+```{r}
+summary(datos)
+
+```
+Misma cantidad de perdidos en Genero y Mayor de 65, se deben hacer comprobaciones si hay alguna relación significativa entre ambas.Existe una proporción desbalanceada entre los mayores de 65 años y el resto del grupo. La mediana en la antiguedad del contrato es menor a la media, por lo que se puede decir que hay más personas con contratos de menos meses.Sin embargo, este valor está cercano a la media, por lo que no hay un sesgo significativo. Contrastar servicio de teléfono con edad. Verificar relacion entre la antiguedad, el contrato y factura mes. Hay gran diferencia entre la facturaMes y total, a partir de la media, esto nos puede indicar que hay outliers en la factura total en el lado de valores altos.
+
+
+
+```{r}
+# Inspección gráfica inicial
+listaGraf <- dfplot_box(datos) #Boxplots
+
+# para presentar una rejilla de graficos a nuestro gusto
+gridExtra::marrangeGrob(listaGraf, nrow = 3, ncol = 3)
+
+```
+
+La variable objetivo fuga de clientes, muestra una desbalaceo, por lo cual el modelo será mejor prediciendo los 0, esto hay que tenerlo en cuenta para evaluar el accuracy modelo.
+
+```{r}
+varObj<-datos$Fuga
+input<-as.data.frame(datos[,-(20)])
+df1<-as.data.frame(datos[,-(20)])
+
+```
+sacamos la variable objetivo del dataset, creamos otro dataset por si hay alguna disyuntiva y se planea tirar de diferentes modelos para comprobar
+
+
+```{r}
+sapply(Filter(is.numeric, input),
+       function(x) atipicosAmissing(x)[[2]])/nrow(input)
+
+```
+no se encontraron valores atipicos en las variables categoricas
+
+```{r}
+prop_missingsVars<-apply(is.na(datostest),2,mean) # Por variable
+#  % de missing por variable
+t<-data.frame(sort(prop_missingsVars*100, decreasing = T))
+names(t)<-"% Missing por Variable"
+t
+
+```
+
+
+
+Se aprecia que la cantidad de perdidos es relativamente baja. Por lo que si se realiza una imputación aleatoria, no debería perjudicar la consistencia de los datos. 
+se puede observar que hay la misma cantidad de perdidos en varias variables, para comprobar si existe alguna relación lineal entre ellas se examina con un corplot
+
+
+
+
+```{r}
+#relación entre missings
+
+corrplot(cor(is.na(input[colnames(
+  input)[colSums(is.na(input))>0]])),method = "ellipse",type = "upper") 
+
+
+```
+
+No se aprecia ningún patrón relaciones lineales entre los perdidos de las variables
+
+
+
+
+```{r}
+#creación de la variable proporcion de missings
+input$prop_missings<-apply(is.na(input),1,mean) 
+summary(input$prop_missings)
+
+
+```
+
+
+```{r}
+input %>% arrange(desc(prop_missings)) %>% slice_head(n=10)
+
+
+```
+La máxima proporcion de missings por registro es de un 15%, lo cual no es alarmante, pero si hace pensar que debemos ser cuidadosos.
+
+
+
+```{r}
+vis_dat(datos, sort_type = FALSE)
+
+
+```
+A simple vista no se observa algún patrón relevante en los datos perdidos
+
+
+
+
+
+```{r}
+numericos<-Filter(is.numeric, df1)
+num<-cor(numericos, use = "complete.obs")
+
+corrplot(cor(num),        
+         method = "number", 
+         type = "upper",    
+         diag = FALSE,      
+         tl.col = "black", 
+         bg = "white",     
+         col = NULL)       
+
+
+
+```
+Se observa una correlación fuerte e inversa entre la antiguedad en meses del contrato y el importe facturado en el mes. Esta relación se puede deber a promociones que tiene la telefónica para sus clientes nuevos. Mientras que el en el caso de la factura total, se observa una relación fuerte y directa. quizas puede explicar fidelidad, los clientes se quedaron en la telefónica....?
+
+
+
+```{r}
+#Para las variables numéricas se realizó una imputación (rl)
+
+as.double(df1$Antig.fc.edad)
+x=df1[(which(sapply(df1, class)=="factor" ))]
+y=df1[,as.vector(which(sapply(df1, class)=="numeric"))]
+y.imp <- impute_lm(y,Antig.fc.edad~FacturaMes)
+y.imp1 <- impute_lm(y.imp, FacturaMes~ Antig.fc.edad )
+y.imp2<- impute_lm(y.imp1, Antig.fc.edad~FacturaTotal)
+y.imp3 <- impute_lm(y.imp2, FacturaMes~ Antig.fc.edad )
+y.imp4<- impute_lm(y.imp3, FacturaTotal~Antig.fc.edad)
+
+#Para las variables categoricas se realizó una imputación randomforest 
+
+df1.imp<-missForest(x)
+x.imp<-as.data.frame(df1.imp$ximp) 
+
+df1=(cbind(x.imp,y.imp4))
+df2=(cbind(x.imp,y.imp4))
+vis_dat(df1, sort_type = FALSE)
+
+
+```
+
+
+
+
+```{r}
+#Para las variables numéricas se realizó una imputación aleatoria (asi tener ambos y ver más adelante)
+input[,as.vector(which(sapply(input, class)=="numeric"))]<-sapply(
+  Filter(is.numeric, input),function(x) ImputacionCuant(x,"aleatorio"))
+
+input[,as.vector(which(sapply(input, class)=="factor"))]<-sapply(
+  Filter(is.factor, input),function(x) ImputacionCuali(x,"aleatorio"))
+
+input[,as.vector(which(sapply(input, class)=="character"))] <- lapply(
+  input[,as.vector(which(sapply(input, class)=="character"))] , factor)
+
+
+#para alguno que quede suelto de aleatorio
+input[,as.vector(which(sapply(input, class)=="numeric"))]<-sapply(
+ Filter(is.numeric, input),function(x) Hmisc::impute(x,"random"))
+
+# Reviso que no queden datos missings
+summary(input)
+summary(df1)
+
+
+
+```
+Se aprecia que ya no hay presencia de missings
+
+
+```{r}
+# Creación de  variables de control 
+input$aleatorio<-runif(nrow(input))
+input$aleatorio2<-runif(nrow(input))
+# Creación de  variables de control 
+df1$aleatorio3<-runif(nrow(df1))
+df1$aleatorio4<-runif(nrow(df1))
+```
+
+
+
+
+
+```{r}
+
+graficoVcramer(input,varObj)
+
+graficoVcramer(df1,varObj)
+```
+A priori las relaciones marginales de las variables con la variable objetivo para hacernos una idea de cuales de ellas serán potencialmente influyentes en los modelos de regresión que ajustemos. Las variables claramente influyentes son el contrato, la antiguedad, el servicio de internet y el método de pago. Nos alegra ver que las aleatorias están entre las últimas posiciones.
+
+
+
+
+```{r}
+# gráficamente el efecto de dos variables cualitativas sobre la binaria
+m1<-mosaico_targetbinaria(input$Genero,varObj,"genero") #no influye
+m2<-mosaico_targetbinaria(input$Mayor65,varObj,"mayor") #no influye
+m3<-mosaico_targetbinaria(input$Conyuge,varObj,"conyuge") #no influye
+m3<-mosaico_targetbinaria(input$PersCargo,varObj,"PersCargo")#no influye
+m5<-mosaico_targetbinaria(input$Telf_serv,varObj,"tel") #no influye
+m6<-mosaico_targetbinaria(input$VariasLineas,varObj,"lineas") #no influye
+m7<-mosaico_targetbinaria(input$Int_serv,varObj,"Int_serv")#influye   
+m8<-mosaico_targetbinaria(input$Seguridad,varObj,"Seguridad") #regular
+m9<-mosaico_targetbinaria(input$CopiaSeguridad,varObj,"CopiaSeguridad") #no influye
+m10<-mosaico_targetbinaria(input$Antivirus_disp,varObj,"Antivirus_disp")#no influye 
+m11<-mosaico_targetbinaria(input$Soporte_tecnico,varObj,"Soporte_tecnico") # regular
+m12<-mosaico_targetbinaria(input$TV_streaming,varObj,"TV_streaming")#no influye   
+m13<-mosaico_targetbinaria(input$Peliculas,varObj,"Peliculas") #no influye
+m14<-mosaico_targetbinaria(input$Contrato,varObj,"Contrato") #influye
+m15<-mosaico_targetbinaria(input$Fact_sinPapel,varObj,"Fact_sinPapel")#no influye 
+m16<-mosaico_targetbinaria(input$MetodoPago,varObj,"MetodoPago")#regular 
+
+
+```
+
+#podemos utilizar la función mosaico que es resultona para las relaciones entre categóricas y las de boxplot e histograma para valorar las relaciones de los predictores continuos con la objetivo binaria.
+
+```{r}
+
+#Veo gráficamente el efecto de dos variables cuantitativas sobre la binaria
+bx1<-boxplot_targetbinaria(input$Antig.fc.edad,varObj,"Antig.fc.edad")
+bx2<-boxplot_targetbinaria(input$FacturaMes,varObj,"FacturaMes")
+bx3<-boxplot_targetbinaria(input$FacturaTotal,varObj,"FacturaTotal")
+
+
+h1<-hist_targetbinaria(input$Antig.fc.edad,varObj,"Antig.fc.edad")
+h2<-hist_targetbinaria(input$FacturaMes,varObj,"FacturaMes")
+h3<-hist_targetbinaria(input$FacturaTotal,varObj,"FacturaTotal")
+
+
+marrangeGrob(list(bx1,bx2,bx3,h1,h2,h3),nrow = 1,ncol = 3)
+
+
+```
+
+factura total es horrible ajajj, factura mes no es buena,existe mucho solapamiento, antig edad es interesante, tiene potencial
+
+## Tranformaciones de variables
+
+Vamos a generar las transformaciones de las variable continuas que maximizan la relación con la variable objetivo binaria en sentido de V de Cramer. 
+
+```{r transformaciones, warning=FALSE}
+#Busco las mejores transformaciones para las variables numéricas con respesto a la variable binaria
+
+input<-cbind(input,Transf_Auto(Filter(is.numeric, input),varObj))
+df1<-cbind(df1,Transf_Auto(Filter(is.numeric, df1),varObj))
+
+# Guardamos el dataset con las tranformaciones
+todo<-data.frame(input,varObj)
+todo2<-data.frame(df1,varObj)
+```
+
+```{r Vcramer tranformaciones, warning=FALSE}
+#Obtengo la importancia de las variables. 
+graficoVcramer(input,varObj)
+graficoVcramer(df1,varObj)
+
+
+```
+Las mejores transformaciones en la variables numéricas son las  elevadas  al cuadrado, si no mejoran mucho el modelo, es preferible utilizar las variables lineales por la interpretabilidad
+
+
+
+```{r }
+freq(todo$varObj) #ese ha de ser el error de referencia
+
+```
+
+
+en esta situación hay un desbalanceo, con una mayor proporción de 0, lo que habíamos visto antes que el modelo tendrá mayor facilidad para predecir No fuga,
+el no modelo predecirá bien un 73.5% de no fugas y un 26,5% de Fugas.
+
+
+
+
+
+## Modelos de regresión logística para la predicción de la variable compra
+
+
+```{r Vcramer tranformaciones, warning=FALSE}
+#particion de datos
+trainIndex <- createDataPartition(todo$varObj, p=0.8, list=FALSE)
+data_train <- todo[trainIndex, c(1:19,27)]
+data_test <- todo[-trainIndex,c(1:19,27)]
+
+#particion de datos2
+trainIndex<- createDataPartition(todo2$varObj, p=0.8, list=FALSE)
+data_train2 <- todo2[trainIndex, c(1:19,27)]
+data_test2 <- todo2[-trainIndex,c(1:19,27)]
+
+
+
+freq(data_train$varObj)
+freq(data_train2$varObj)
+```
+
+El create partition ayuda a crear una distribucion estratificada de train y test. Por lo que el test es representativo. Esta primera la haremos con los datos imputados por aleatoria y sin transformaciones
+
+
+
+```{r }
+modeloInicial<-glm(varObj~.,data=data_train,family=binomial)
+summary(modeloInicial)
+
+modeloInicial2<-glm(varObj~.,data=data_train2,family=binomial)
+summary(modeloInicial2)
+
+pseudoR2(modeloInicial,data_train,"varObj")
+pseudoR2(modeloInicial2,data_train2,"varObj")
+pseudoR2(modeloInicial2,data_test2,"varObj")
+
+car::vif(modeloInicial)
+car::vif(modeloInicial2)
+
+```
+```{r }
+
+
+pseudoR2(modeloInicial2,data_train2,"varObj")
+pseudoR2(modeloInicial2,data_test2,"varObj")
+
+```
+
+
+
+observamos que los aleatorios no son significativos en lo obsoluto que es un buen indicador de control, algunas de las variables que han aparecido como significativas, las habíamos visto antes, es el caso de Antig.fc.edad, los tipos de contrato, tomando como referencia  el contrato de mes a mes,así como el servicio de internet. En el caso de seguridad y soporte técnico, parecián como una influencia regular. Sin embargo, el modelo las ha tomado como significativas, y por el contrario con método de pago, la cual parecía regular, pero el modelo la toma como no significativas en todas sus categorías, exceptuandmo el pago electrónico que ha tomado como poco significativa. Finalmente, las variables que no nos esperaramos que tuvieran alguna influencia: factura sin papel,  el cliente tiene el servicio de películas contratado, tener  contratado el servicio de copia de seguridad y el servicio de  TV en streaming. 
+
+Para hacerle un chequeo a estas variables que no esperábamos que fueran influyentes, veremos la distribución de estas con la variable respuesta. 
+
+
+#con el dataset df1
+
+Este model tiene un AIC menor que el imputado por aleatorio, lo que nos indica que es un modelo mejor. Adicionalmente, este modelo se ajusta más a lo observado con la VCrammer y tiene un pseudoR2 superior. Por tal motivo, nos quedaremos con este modelo para el resto de pruebas.
+
+  
+
+```{r }
+table(data_train$Fact_sinPapel,data_train$varObj)
+
+```
+tenemos frecuencias similares para factura con y sin papel, donde el cliente no se fuga. Sin embargo, se observa que en la factura sin papel,  hay una frecuencia casi 3 veces superior a la factura con papel.
+
+```{r }
+table(data_train$Peliculas,data_train$varObj)
+table(data_train$CopiaSeguridad,data_train$varObj)
+table(data_train$TV_streaming,data_train$varObj)
+
+
+```
+
+En copia de seguridad podemos observar un comportamiento similar a factura sin papel, en este caso el no tener copia de seguridad tiene tiene una frecuencia de fuga casi 3 vecer mayor.
+
+
+
+```{r }
+
+impVariablesLog(modeloInicial2,"varObj") 
+
+
+```
+
+se observa que hubo un cambio en la importancia de las variables, el contrato sigue siendo la más influyente. Sin embargo, tener el servicio de internet sería la segunda, seguida de la antifuedad. El resto de las variables continúa de forma similar. Se puede considerar un modelo con unicamente las 3 primeras variables, ya que tienen un peso de R2 alto. Actualmente el modelo tiene un pseudoR2 de 0.27 lo que en términos de R2, estaría alrededor de un 0.80. Sin embargo, hay que considerar que el no modelo ya tenía una capacidad predictiva de 0.73
+
+
+```{r }
+
+car::vif(modeloInicial2)
+
+```
+Hay variables con una varianza extremadamente alta, así que comenzaremos por remover Factura Mes
+
+```{r }
+
+#particion de datostransformacion
+
+trainIndex<- createDataPartition(todo2$varObj, p=0.8, list=FALSE)
+data_train_trans <- todo2[trainIndex, c(1:17,24,27)]
+data_test_trans <- todo2[-trainIndex,c(1:17,24,27)]
+
+modelo1<-glm(varObj~.,data=data_train_trans,family=binomial)
+
+summary(modelo1)
+
+pseudoR2(modelo1,data_train_trans,"varObj")
+pseudoR2(modelo1,data_test_trans,"varObj")
+car::vif(modelo1)
+
+
+```
+
+Hagamos uno facil de explicar
+
+
+```{r }
+#modelo sencillo
+
+modelo2<-glm(varObj~Contrato+Int_serv+Antig.fc.edad+Fact_sinPapel,
+             data=data_train2,family=binomial)
+summary(modelo2)
+
+
+pseudoR2(modelo2,data_train2,"varObj")
+pseudoR2(modelo2,data_test2,"varObj")
+```
+
+
+Aunque es más sencillo de explicar, aumenta el AIC, de 4321.6 a 4472.5, son 150 puntos que perdemos, pero que puede justificarse si se necesita un modelo rápido y fácil.
+
+
+```{r }
+
+car::vif(modelo2)
+
+```
+Este modelo es menos preciso, pero no tiene inflada la varianza inflada
+
+
+
+
+
+
+
+
+```{r }
+
+car::vif(modeloInicial2)
+
+```
+
+La inflación de la varianza es muy alto, sobretodo en FacturaMes, vamos a remover esta variable 
+
+
+```{r }
+
+impVariablesLog(modeloInicial2,"varObj", dd=data_train2) 
+
+```
+
+
+
+
+
+#Ahora probaremos algunas interacciones
+```{r }
+
+modelo3<-glm(varObj~.+Antig.fc.edad*Int_serv+Contrato*Antig.fc.edad-FacturaTotal-FacturaMes-Genero-Conyuge-PersCargo-Antivirus_disp,
+             data=data_train2,family=binomial)
+
+summary(modelo3)
+pseudoR2(modelo3,data_train2,"varObj")
+pseudoR2(modelo3,data_test2,"varObj")
+car::vif(modelo3)
+```
+servicio de internet con contrato no tiene ninguna significancia, así que lo sacaremos del modelo. Dejaremos la interacción de contrato con antiguedad
+
+
+```{r }
+
+modelo4<-glm(varObj~.+ Contrato*Antig.fc.edad-FacturaTotal,data=data_train,family=binomial)
+summary(modelo4)
+
+
+pseudoR2(modelo4,data_train,"varObj")
+```
+
+
+
+Parece ser una interacción interesante, aunque no disminuye mucho el AIC y aumenta poco el R2. Puede ser representativa. En train y test es muy similar.
+
+#haremos otro modelo con solo las representativas sin interaciones
+```{r }
+
+modelo5<-glm(varObj~ Contrato+ Antig.fc.edad+ Int_serv+ MetodoPago+Fact_sinPapel+Seguridad+Telf_serv,
+             data=data_train2,family=binomial)
+
+summary(modelo5)
+
+pseudoR2(modelo5,data_train2,"varObj")
+```
+
+
+
+#intentemos una tramificación de la antiguedad
+
+```{r }
+
+tree_Antig<-rpart::rpart(varObj~Antig.fc.edad , data = df2, cp=0.025)
+
+tree_Antig
+
+```
+```{r }
+# puntos de corte en 17 y 4.5 Tres grupos. 
+
+
+table(tree_Antig$where)
+
+```
+se han creado 3 grupos, donde la mayoría se ubican en el dos, que corresponde al de antiguedad mayor a 17 años, el siguiente grupo son los mayores a 4,5 años y por último, los que son menos de 4.5 años.
+
+
+```{r }
+# Cambiamos los niveles
+levels(df1$Antig.fc.edad_Tram )= c('>=17','>=4.5','<4.5')
+table(df1$Antig.fc.edad_Tram)
+```
+
+
+
+
+
+
+```{r }
+
+df1$Antig.fc.edad_Tram<-factor(tree_Antig$where)
+#se añade al dataframe
+```
+
+#Modelo con la variable tramificada
+
+
+
+```{r }
+todo4<-data.frame(df1,varObj)
+
+trainIndex <- createDataPartition(todo3$varObj, p=0.8, list=FALSE)
+data_train3 <- todo3[trainIndex, c(1:19,27,28)]
+data_test3 <- todo3[-trainIndex,c(1:19,27,28)]
+
+modelo4<-glm(varObj~.+Antig.fc.edad*Int_serv+Contrato*Antig.fc.edad-FacturaTotal-FacturaMes-Genero-Conyuge-PersCargo-Antivirus_disp-Antig.fc.edad,data=data_train3,family=binomial)
+summary(modelo4)
+
+pseudoR2(modelo4,data_train3,"varObj")
+pseudoR2(modelo4,data_test3,"varObj")
+
+```
+
+```{r }
+
+car::vif(modelo4)
+
+```
+
+
+
+
+#pasemos a Validación cruzada Repetida
+
+```{r }
+
+#copia de la variable original
+auxVarObj<-todo4$varObj
+
+#formateo la variable objetivo para que funcione el codigo
+todo4$varObj<-make.names(todo4$varObj) 
+
+total<-c()
+modelos<-sapply(list(modeloInicial2,modelo1,modelo2,modelo3,modelo),formula)
+for (i in 1:length(modelos)){
+  set.seed(1712)
+  vcr<-train(as.formula(modelos[[i]]), data = todo4,
+             method = "glm", family="binomial",metric = "ROC",
+             trControl = trainControl(method="repeatedcv", number=5, repeats=20,
+                                      summaryFunction=twoClassSummary,
+                                      classProbs=TRUE,returnResamp="all")
+  )
+  total<-rbind(total,data.frame(roc=vcr$resample[,1],modelo=rep(paste("Modelo",i),
+                                                                  nrow(vcr$resample))))
+}
+boxplot(roc~modelo,data=total,main="Área bajo la curva ROC") 
+
+```
+
+
+```{r }
+aggregate(roc~modelo, data = total, mean) 
+
+```
+
+```{r }
+aggregate(roc~modelo, data = total, sd) 
+
+```
+
+
+
+```{r }
+#recupero la variable objetivo en su formato
+todo4$varObj<-auxVarObj
+
+modeloInicial2$rank
+modelo1$rank
+modelo2$rank
+modelo3$rank
+modelo4$rank
+
+```
+
+#Mejor punto de corte
+
+```{r }
+hist_targetbinaria(predict(modelo4, newdata=data_test3,type="response"),data_test3$varObj,"probabilidad")
+
+```
+
+
+
+
+```{r }
+
+## generamos una rejilla de puntos de corte
+posiblesCortes<-seq(0,1,0.01)
+rejilla<-data.frame(t(rbind(posiblesCortes,sapply(posiblesCortes,function(x) sensEspCorte(modelo4,data_test3,"varObj",x,"1")))))
+rejilla$Youden<-rejilla$Sensitivity+rejilla$Specificity-1
+plot(rejilla$posiblesCortes,rejilla$Youden)
+
+```
+
+
+
+
+```{r }
+
+plot(rejilla$posiblesCortes,rejilla$Accuracy)
+
+```
+
+```{r }
+#encontrando Máximos
+
+rejilla$posiblesCortes[which.max(rejilla$Youden)]
+
+```
+```{r }
+#encontrando Máximos
+
+rejilla$posiblesCortes[which.max(rejilla$Accuracy)]
+```
+
+
+```{r }
+
+sensEspCorte(modelo4,data_test3,"varObj",0.25,"1")
+
+sensEspCorte(modelo4,data_test3,"varObj",0.25,"1")
+```
+
+
+```{r }
+
+#ver coeficientes
+
+coef(modelo3)
+
+
+```
+
+```{r }
+
+# Generar el factos con las clases estimadas en test
+pred_test<-factor(ifelse(predict(modelo4,data_test3,type = "response")>0.25,1,0))
+# Tablas marginales
+table(pred_test)
+
+confusionMatrix(pred_test,data_test3
+                $varObj, positive = '1')
+
+
+
+```
+
+
+```{r }
+
+modeloC<-glm(formula(modelo4),
+data=todo3,family=binomial)
+summary(modeloC)
+
+```
+Al parecer es mejor el modelo6
+
+
+```{r }
+
+modeloC<-glm(formula(modelo4),
+data=todo3,family=binomial)
+summary(modeloC)
+
+```
+
+```{r }
+
+logistic.display(modeloStepAIC,simplified = F )
+
+car::vif(modeloStepAIC)
+
+
+```
+
+Conclusiones del Modelo
+
+la probabilidad de fuga de un cliente, frente a quedarse, cuando el cliente tiene menos de 4,5 años de antiguedad es 2.3 veces superior a los que tienen más de 17 años, pudiendo variar este ratio entre 1.58 y 3.35. Adicionalmente, los clientes que tienen igual o más de 4.5 años tienen una probabilidad 1.16 veces mayor a los de 17 años.
+
+todas las de 0.-- hay que sacarles el complementario
+
+
+```{r }
+
+
+null<-glm(varObj~1, data=data_train3,family=binomial) #Modelo minimo
+full<-glm(varObj~., data=data_train3,family=binomial) #Modelo maximo, le quitamos las transformaci
+modeloStepAIC<-step(null, scope=list(lower=null, upper=full), direction="both", trace = F)
+summary(modeloStepAIC)
+
+pseudoR2(modeloStepAIC,data_test3,"varObj")
+
+
+
+modeloStepBIC<-step(null, scope=list(lower=null, upper=full), direction="both",trace= F, k=log(nrow(data_train3)))
+summary(modeloStepBIC)
+
+
+```
+
+
+```{r }
+
+
+trainIndex <- createDataPartition(todo3$varObj, p=0.8, list=FALSE)
+data_train4 <- todo3[trainIndex, c(1:28,29)]
+data_test4 <- todo3[-trainIndex,c(1:28,29)]
+
+null<-glm(varObj~1, data=data_train4,family=binomial) #Modelo minimo
+full<-glm(varObj~., data=data_train4,family=binomial) #Modelo maximo, le quitamos las transformaci
+modeloStepAIC<-step(null, scope=list(lower=null, upper=full), direction="both", trace = F)
+summary(modeloStepAIC)
+
+
+pseudoR2(modeloStepAIC,data_train3,"varObj")
+pseudoR2(modeloStepAIC,data_test3,"varObj")
+```
+
+#Son demasiadas interaciones y resulta imposible de procesar para mi ordenador
+```{r }
+
+#Genero interacciones
+
+formInt<-formulaInteracciones(todo3[,c(1:17,27)],28)#en el subconjunto de las vbles. originales
+fullInt<-glm(varObj~ Mayor65 : VariasLineas + Mayor65 : Int_serv + Mayor65 : Seguridad + Mayor65 : CopiaSeguridad + Mayor65 : Antivirus_disp + Mayor65 : Soporte_tecnico + Mayor65 : TV_streaming + Mayor65 : Peliculas + Mayor65 : Contrato + Mayor65 : Fact_sinPapel + Mayor65 : MetodoPago + Mayor65 : Antig.fc.edad + Mayor65 : Antig.fc.edad_Tram + Conyuge + Conyuge : PersCargo + Conyuge : Telf_serv + Conyuge : VariasLineas + Conyuge : Int_serv + Conyuge : Seguridad + Conyuge : CopiaSeguridad + Conyuge : Antivirus_disp + Conyuge : Soporte_tecnico + Conyuge : TV_streaming + Conyuge : Peliculas + Conyuge : Contrato + Conyuge : Fact_sinPapel + Conyuge : MetodoPago + Conyuge : Antig.fc.edad + Conyuge : Antig.fc.edad_Tram + PersCargo + PersCargo : Telf_serv + PersCargo : VariasLineas + PersCargo : Int_serv + PersCargo : Seguridad + PersCargo : CopiaSeguridad + PersCargo : Antivirus_disp + PersCargo : Soporte_tecnico + PersCargo : TV_streaming + PersCargo : Peliculas + PersCargo : Contrato + PersCargo : Fact_sinPapel + PersCargo : MetodoPago + PersCargo : Antig.fc.edad + PersCargo : Antig.fc.edad_Tram + Telf_serv + Telf_serv : VariasLineas + Telf_serv : Int_serv + Telf_serv : Seguridad + Telf_serv : CopiaSeguridad + Telf_serv : Antivirus_disp + Telf_serv : Soporte_tecnico + Telf_serv : TV_streaming + Telf_serv : Peliculas + Telf_serv : Contrato + Telf_serv : Fact_sinPapel + Telf_serv : MetodoPago + Telf_serv : Antig.fc.edad + Telf_serv : Antig.fc.edad_Tram + VariasLineas + VariasLineas : Int_serv + VariasLineas : Seguridad + VariasLineas : CopiaSeguridad + VariasLineas : Antivirus_disp + VariasLineas : Soporte_tecnico + VariasLineas : TV_streaming + VariasLineas : Peliculas + VariasLineas : Contrato + VariasLineas : Fact_sinPapel + VariasLineas : MetodoPago + VariasLineas : Antig.fc.edad + VariasLineas : Antig.fc.edad_Tram + Int_serv + Int_serv : Seguridad + Int_serv : CopiaSeguridad + Int_serv : Antivirus_disp + Int_serv : Soporte_tecnico + Int_serv : TV_streaming + Int_serv : Peliculas + Int_serv : Contrato + Int_serv : Fact_sinPapel + Int_serv : MetodoPago + Int_serv : Antig.fc.edad + Int_serv : Antig.fc.edad_Tram + Seguridad + Seguridad : CopiaSeguridad + Seguridad : Antivirus_disp + Seguridad : Soporte_tecnico  , data=data_train3,family=binomial)
+
+modeloStepAIC_int<-step(null, scope=list(lower=null, upper=fullInt), direction="both", trace = F)
+summary(modeloStepAIC_int)
+
+
+```
+```{r }
+
+rep<-20
+prop<-0.7
+modelosGenerados<-c()
+for (i in 1:rep){
+  set.seed(12345+i)
+  subsample<-data_train3[sample(1:nrow(data_train3),prop*nrow(data_train3),replace = T),]
+  full<-glm(varObj~Genero : Mayor65 + Genero : Conyuge + Genero : PersCargo + Genero : Telf_serv + Genero : VariasLineas + Genero : Int_serv + Genero : Seguridad + Genero : CopiaSeguridad + Genero : Antivirus_disp + Genero : Soporte_tecnico + Genero : TV_streaming + Genero : Peliculas + Genero : Contrato + Genero : Fact_sinPapel + Genero : MetodoPago + Genero : Antig.fc.edad + Genero : Antig.fc.edad_Tram + Mayor65 + Mayor65 : Conyuge + Mayor65 : PersCargo + Mayor65 : Telf_serv + Mayor65 : VariasLineas + Mayor65 : Int_serv + Mayor65 : Seguridad + Mayor65 : CopiaSeguridad + Mayor65 : Antivirus_disp + Mayor65 : Soporte_tecnico + Mayor65 : TV_streaming + Mayor65 : Peliculas + Mayor65 : Contrato + Mayor65 : Fact_sinPapel + Mayor65 : MetodoPago + Mayor65 : Antig.fc.edad + Mayor65 : Antig.fc.edad_Tram + Conyuge + Conyuge : PersCargo + Conyuge : Telf_serv + Conyuge : VariasLineas + Conyuge : Int_serv + Conyuge : Seguridad + Conyuge : CopiaSeguridad + Conyuge : Antivirus_disp + Conyuge : Soporte_tecnico + Conyuge : TV_streaming + Conyuge : Peliculas + Conyuge : Contrato + Conyuge : Fact_sinPapel + Conyuge : MetodoPago + Conyuge : Antig.fc.edad + Conyuge : Antig.fc.edad_Tram + PersCargo + PersCargo : Telf_serv + PersCargo : VariasLineas + PersCargo : Int_serv + PersCargo : Seguridad + PersCargo : CopiaSeguridad + PersCargo : Antivirus_disp + PersCargo : Soporte_tecnico + PersCargo : TV_streaming + PersCargo : Peliculas + PersCargo : Contrato + PersCargo : Fact_sinPapel + PersCargo : MetodoPago + PersCargo : Antig.fc.edad + PersCargo : Antig.fc.edad_Tram + Telf_serv + Telf_serv : VariasLineas + Telf_serv : Int_serv + Telf_serv : Seguridad + Telf_serv : CopiaSeguridad + Telf_serv : Antivirus_disp + Telf_serv : Soporte_tecnico + Telf_serv : TV_streaming + Telf_serv : Peliculas + Telf_serv : Contrato + Telf_serv : Fact_sinPapel + Telf_serv : MetodoPago + Telf_serv : Antig.fc.edad + Telf_serv : Antig.fc.edad_Tram + VariasLineas + VariasLineas : Int_serv + VariasLineas : Seguridad + VariasLineas : CopiaSeguridad + VariasLineas : Antivirus_disp + VariasLineas : Soporte_tecnico + VariasLineas : TV_streaming + VariasLineas : Peliculas + VariasLineas : Contrato + VariasLineas : Fact_sinPapel + VariasLineas : MetodoPago + VariasLineas : Antig.fc.edad + VariasLineas : Antig.fc.edad_Tram + Int_serv + Int_serv : Seguridad + Int_serv : CopiaSeguridad + Int_serv : Antivirus_disp + Int_serv : Soporte_tecnico + Int_serv : TV_streaming + Int_serv : Peliculas + Int_serv : Contrato + Int_serv : Fact_sinPapel + Int_serv : MetodoPago + Int_serv : Antig.fc.edad + Int_serv : Antig.fc.edad_Tram + Seguridad + Seguridad : CopiaSeguridad + Seguridad : Antivirus_disp + Seguridad : Soporte_tecnico + Seguridad : TV_streaming + Seguridad : Peliculas + Seguridad : Contrato + Seguridad : Fact_sinPapel + Seguridad : MetodoPago + Seguridad : Antig.fc.edad + Seguridad : Antig.fc.edad_Tram + CopiaSeguridad + CopiaSeguridad : Antivirus_disp + CopiaSeguridad : Soporte_tecnico + CopiaSeguridad : TV_streaming + CopiaSeguridad : Peliculas + CopiaSeguridad : Contrato + CopiaSeguridad : Fact_sinPapel + CopiaSeguridad : MetodoPago + CopiaSeguridad : Antig.fc.edad + CopiaSeguridad : Antig.fc.edad_Tram + Antivirus_disp + Antivirus_disp : Soporte_tecnico + Antivirus_disp : TV_streaming + Antivirus_disp : Peliculas + Antivirus_disp : Contrato + Antivirus_disp : Fact_sinPapel + Antivirus_disp : MetodoPago + Antivirus_disp : Antig.fc.edad + Antivirus_disp : Antig.fc.edad_Tram + Soporte_tecnico + Soporte_tecnico : TV_streaming + Soporte_tecnico : Peliculas + Soporte_tecnico : Contrato + Soporte_tecnico : Fact_sinPapel + Soporte_tecnico : MetodoPago + Soporte_tecnico : Antig.fc.edad + Soporte_tecnico : Antig.fc.edad_Tram + TV_streaming + TV_streaming : Peliculas + TV_streaming : Contrato + TV_streaming : Fact_sinPapel,data=subsample, family = binomial)
+  null<-glm(varObj~1,data=subsample, family = binomial)
+  modeloAux<-step(null,scope=list(lower=null,upper=full),direction="both",trace=0,k=log(nrow(subsample)))
+  modelosGenerados<-c(modelosGenerados,paste(sort(unlist(strsplit(as.character(formula(modeloAux))[3]," [+] "))),collapse = "+"))
+}
+(freq(modelosGenerados,sort="dec")->fr)
+
+
+```
+```{r }
+
+## LASSO, lo hacemos sin interacciones pues, de lo contrario, puede coger interacciones y no las variables que las forman
+y <- as.double(as.matrix(data_train3[, 20]))
+x<-model.matrix(varObj~., data=data_train3)[,-1]1
+set.seed(1712)
+cv.lasso <- cv.glmnet(x,y,nfolds=5)
+plot(cv.lasso)
+
+(betas<-coef(cv.lasso, s=cv.lasso$lambda.1se))
+
+```
+```{r Comparacion final por validacion cruzada}
+## Comparación final, tomo el ganador de antes y los nuevos candidatos
+total2<-c()
+modelos2<-c(formula(modelo4),formula(modeloStepBIC),
+            as.formula(paste('varObj ~', rownames(fr)[1])),
+            as.formula(paste('varObj ~', rownames(fr)[2])),
+            as.formula(paste('varObj ~', rownames(fr)[3])))
+for (i in 1:length(modelos2)){
+  set.seed(1712)
+  vcr<-train(as.formula(modelos2[[i]]), data = data_train3,
+             method = "glm",
+             trControl = trainControl(method="repeatedcv", number=5, repeats=20,
+                                      returnResamp="all")
+  )
+  total2<-rbind(total2,cbind(vcr$resample[,1:2],modelo=rep(paste("Modelo",i),
+                                                         nrow(vcr$resample))))
+}
+set.seed(1712)
+lassovcr <- train(varObj ~ ., data = data_train3, 
+                  method = "glmnet",
+                  tuneGrid=expand.grid(.alpha=1,.lambda=cv.lasso$lambda.1se),
+                  trControl = trainControl(method="repeatedcv", number=5, repeats=20,
+                                           returnResamp="all")
+)
+total2<-rbind(total2,cbind(lassovcr$resample[,1:2],modelo=rep("LASSO",
+                                                         nrow(vcr$resample))))
+
+
+
+```
+
+
+```{r}
+
+
+boxplot(Accuracy~modelo,data=total2,main="Accuracy") 
+
+
+
+```
+```{r}
+
+
+boxplot(Kappa~modelo,data=total2,main="Kappa") 
+
+
+
+```
+
+
+```{r}
+
+aggregate(Accuracy~modelo, data = total2, mean)
+aggregate(Kappa~modelo, data = total2, mean)
+
+
+
+```
+
+
+```{r }
+#Construcción del Dataset con el ID de los clientes y su predicción de fuga.
+
+
+datostest$Antig.fc.edad_Tram  <- ifelse(datostest$Antig.fc.edad>=17,'>=17',ifelse(datostest$Antig.fc.edad>=4.5,'>=4.5','<4.5'))
+ predTest<-predict(modelo4,datostest,type = "response")
+ Fuga_pred <- factor(ifelse(predTest>0.25,1,0))
+ pred_Final <- data.frame("ID"=datostest$ID, "Predicción de Fuga"=Fuga_pred)
+ 
+  saveRDS(pred_Final,"FugaPredict_hijosdeYouden.RDS")
+
+
+
+
+```
